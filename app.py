@@ -31,7 +31,12 @@ import qr
 from db import DB, FOR_UPDATE, IS_PG, IntegrityError, init_schema, utcnow
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Normally the web files live in ./static. If they were uploaded flat next to app.py
+# (easy to do via GitHub's web uploader), serve them from the top folder instead.
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+if not os.path.isfile(os.path.join(STATIC_DIR, "shop.html")):
+    STATIC_DIR = BASE_DIR
+WEB_EXTS = (".js", ".css", ".html")
 TYPES = {"record_form": "Record Form", "response_booklet": "Response Booklet"}
 EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9-]{16,64}$")
@@ -1315,6 +1320,8 @@ def page_setup():
 
 @app.get("/static/<path:p>")
 def static_files(p):
+    if not p.lower().endswith(WEB_EXTS):  # never serve source code or data files
+        return Response("Not found", 404)
     resp = send_from_directory(STATIC_DIR, p)
     resp.headers["Cache-Control"] = "no-cache"
     return resp
