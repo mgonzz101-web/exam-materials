@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="data:,">
+<title>Take Exam Materials</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar"><div class="wrap">
+  <h1>Exam Materials</h1>
+  <div id="acct" class="row"></div>
+</div></header>
+
+<main class="wrap">
+  <section id="v-browse">
+    <p class="lead">Pick what you need, add it to your cart, then tap <b>Complete Checkout</b>. It’s free — we just record what you took.</p>
+    <div class="filters">
+      <input id="q" type="search" placeholder="Search exam, edition, or form…" aria-label="Search materials" autocomplete="off">
+      <div class="chips" id="typeChips" role="group" aria-label="Material type">
+        <button class="chip" data-type="all" aria-pressed="true">All</button>
+        <button class="chip" data-type="record_form" aria-pressed="false">Record forms</button>
+        <button class="chip" data-type="response_booklet" aria-pressed="false">Response booklets</button>
+      </div>
+      <div class="row grow">
+        <select id="examSel" aria-label="Filter by exam"></select>
+        <select id="edSel" aria-label="Filter by edition"></select>
+      </div>
+    </div>
+    <div id="list" aria-live="polite"></div>
+  </section>
+
+  <section id="v-cart" hidden>
+    <button class="btn ghost small" id="backBrowse">← Keep browsing</button>
+    <h2 style="margin:14px 0 8px">Your cart</h2>
+    <div class="card" id="cartCard"></div>
+    <div class="card" id="whoCard">
+      <h2>Who is taking these?</h2>
+      <div id="whoNote" class="hint"></div>
+      <label for="nm">Your name</label>
+      <input id="nm" autocomplete="name" maxlength="100">
+      <label for="em">Your email</label>
+      <input id="em" type="email" inputmode="email" autocomplete="email" maxlength="200">
+      <p id="cartErr" class="form-error" role="alert" hidden></p>
+      <div id="problems"></div>
+      <button class="btn primary block" id="goBtn" style="margin-top:16px">Complete Checkout</button>
+      <p class="hint" style="text-align:center">Nothing is taken from inventory until you tap this button.</p>
+    </div>
+  </section>
+
+  <section id="v-receipt" hidden>
+    <div class="card receipt-ok" id="receiptCard"></div>
+  </section>
+</main>
+
+<div id="bar" class="cartbar" hidden><div class="wrap">
+  <div><b id="barCount"></b><div class="small muted">in your cart</div></div>
+  <button class="btn primary" id="barBtn">Review cart</button>
+</div></div>
+<div id="toast" aria-live="polite"></div>
+<script src="/static/common.js"></script>
+<script src="/static/shop.js"></script>
+</body>
+</html>

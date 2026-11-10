@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: exam-materials
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --threads 4 --bind 0.0.0.0:$PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL      # paste your Neon connection string
+        sync: false
+      - key: SETUP_KEY         # any long random phrase; needed once to create the owner account
+        sync: false
+      - key: MAIL_FROM         # the sender address you verified with your email service
+        sync: false
+      - key: BREVO_API_KEY     # (or use RESEND_API_KEY instead)
+        sync: false
