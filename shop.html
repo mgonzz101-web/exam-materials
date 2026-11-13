@@ -16,6 +16,7 @@
 <main class="wrap">
   <section id="v-browse">
     <p class="lead">Pick what you need, add it to your cart, then tap <b>Complete Checkout</b>. It’s free — we just record what you took.</p>
+    <p class="small"><button class="btn small" id="toReturn" type="button">↩ Returning a test kit? Tap here</button></p>
     <div class="filters">
       <input id="q" type="search" placeholder="Search exam, edition, or form…" aria-label="Search materials" autocomplete="off">
       <div class="chips" id="typeChips" role="group" aria-label="Material type">
@@ -47,6 +48,20 @@
       <button class="btn primary block" id="goBtn" style="margin-top:16px">Complete Checkout</button>
       <p class="hint" style="text-align:center">Nothing is taken from inventory until you tap this button.</p>
     </div>
+  </section>
+
+  <section id="v-return" hidden>
+    <button class="btn ghost small" id="retBack">← Back to materials</button>
+    <h2 style="margin:14px 0 8px">Return a test kit</h2>
+    <div class="card">
+      <p class="muted">Enter the email you used when you checked the kit out, and we'll show what you still have.</p>
+      <label for="retEmail">Your email</label>
+      <input id="retEmail" type="email" inputmode="email" autocomplete="email" maxlength="200">
+      <button class="btn primary block" id="retFind" style="margin-top:12px">Find my kits</button>
+      <p id="retErr" class="form-error" role="alert" hidden></p>
+    </div>
+    <div id="retList"></div>
+    <div class="card receipt-ok" id="retDone" hidden></div>
   </section>
 
   <section id="v-receipt" hidden>

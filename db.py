@@ -142,7 +142,13 @@ def init_schema(d):
                 material_type TEXT NOT NULL,
                 form_name TEXT NOT NULL,
                 qty INTEGER NOT NULL CHECK (qty >= 0),
-                original_qty INTEGER NOT NULL)""",
+                original_qty INTEGER NOT NULL,
+                returned_qty INTEGER NOT NULL DEFAULT 0)""",
+            f"""CREATE TABLE IF NOT EXISTS returns (
+                id {pk},
+                token TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                created_at TEXT NOT NULL)""",
             f"""CREATE TABLE IF NOT EXISTS movements (
                 id {pk},
                 item_id BIGINT NOT NULL REFERENCES items(id),
@@ -177,6 +183,13 @@ def init_schema(d):
         ]
         for s in stmts:
             d.execute(s)
+        # Upgrade databases created before test-kit returns existed.
+        if IS_PG:
+            d.execute("ALTER TABLE checkout_lines ADD COLUMN IF NOT EXISTS returned_qty INTEGER NOT NULL DEFAULT 0")
+        else:
+            cols = [r["name"] for r in d.execute("PRAGMA table_info(checkout_lines)").all()]
+            if "returned_qty" not in cols:
+                d.execute("ALTER TABLE checkout_lines ADD COLUMN returned_qty INTEGER NOT NULL DEFAULT 0")
     finally:
         if IS_PG:
             d.execute("SELECT pg_advisory_unlock(8841001)")

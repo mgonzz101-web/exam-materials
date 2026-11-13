@@ -10,6 +10,7 @@
     restock: "Stock added",
     removed: "Stock removed",
     count: "Physical count",
+    return: "Kit returned",
   };
   const ALERT_TXT = {
     sent: (a) => `Emailed ${fmtDate(a.at)}`,
@@ -131,6 +132,11 @@
             <td class="small">${esc(alertText(i))}</td><td><button class="btn small primary" data-adj="${i.id}" data-mode="add">Restock</button></td></tr>`).join("")}
           </tbody></table></div>` : `<p class="muted">Every active item is above its low-stock level.</p>`}
       </div>
+      ${(dash.kits_out || []).length ? `<div class="card"><h2>Test kits currently out (${dash.kits_out.reduce((a, k) => a + k.outstanding, 0)})</h2>
+        <div class="table-wrap"><table><thead><tr><th>Kit</th><th class="num">Out</th><th>Who</th><th>Since</th><th></th></tr></thead><tbody>
+        ${dash.kits_out.map((k) => `<tr><td>${esc(k.label)}</td><td class="num qty">${k.outstanding}</td><td>${esc(k.name)}<div class="small muted">${esc(k.email)}</div></td><td class="small">${esc(fmtDate(k.created_at))}</td>
+          <td><button class="btn small" data-kit="${k.line_id}" data-out="${k.outstanding}" data-label="${esc(k.label)}">Mark returned</button></td></tr>`).join("")}
+        </tbody></table></div></div>` : ""}
       <div class="tiles">
         <div class="tile"><span class="muted small">Active items</span><b>${dash.total}</b></div>
         <div class="tile in"><span class="muted small">In stock</span><b>${c.in}</b></div>
@@ -162,6 +168,7 @@
         go("dashboard");
       };
     $$("[data-goto]").forEach((b) => (b.onclick = () => go(b.dataset.goto)));
+    $$("[data-kit]").forEach((b) => (b.onclick = () => kitReturnModal(b.dataset)));
     $$("[data-adj]").forEach((b) => (b.onclick = () => adjustModal(S.items.find((i) => i.id === Number(b.dataset.adj)), b.dataset.mode)));
   }
 
@@ -215,7 +222,7 @@
       submit: editing ? "Save changes" : "Add item",
       body: `<label for="x_exam">Exam name</label><input id="x_exam" value="${esc(it?.exam || "")}" placeholder="e.g. WISC-V">
         <label for="x_ed">Edition / version</label><input id="x_ed" value="${esc(it?.edition || "")}" placeholder="e.g. 5th Edition">
-        <label for="x_type">Material type</label><select id="x_type"><option value="record_form">Record form</option><option value="response_booklet">Response booklet</option></select>
+        <label for="x_type">Material type</label><select id="x_type"><option value="record_form">Record form</option><option value="response_booklet">Response booklet</option><option value="test_kit">Test kit (checked out and returned)</option></select>
         <label for="x_fn">Specific form or booklet name <span class="muted">(optional)</span></label><input id="x_fn" value="${esc(it?.form_name || "")}" placeholder="e.g. Response Booklet 1">
         ${editing ? "" : `<label for="x_q">Starting quantity <span class="muted">(individual forms, not packs)</span></label><input id="x_q" inputmode="numeric" value="0">`}
         <label for="x_t">Low-stock alert level</label><input id="x_t" inputmode="numeric" value="${it ? it.low_threshold : 5}">
@@ -240,6 +247,21 @@
         await api(editing ? `/api/admin/items/${it.id}` : "/api/admin/items", { method: editing ? "PUT" : "POST", body });
         toast(editing ? "Saved" : "Item added", "good");
         go(S.tab);
+      },
+    });
+  }
+
+  function kitReturnModal(k) {
+    modal({
+      title: "Mark kit returned",
+      submit: "Mark returned",
+      body: `<p><b>${esc(k.label)}</b><br>${k.out} currently out.</p>
+        <label for="kq">How many came back?</label><input id="kq" inputmode="numeric" value="${k.out}">
+        <label for="kr">Note <span class="muted">(required)</span></label><input id="kr" maxlength="300" value="Returned in person">`,
+      async onSubmit(f) {
+        await api(`/api/admin/loans/${k.kit}/return`, { method: "POST", body: { qty: $("#kq", f).value, reason: $("#kr", f).value } });
+        toast("Marked returned — stock updated", "good");
+        go("dashboard");
       },
     });
   }
@@ -339,7 +361,7 @@
         <div class="row spread"><div><b>#${c.id} · ${esc(c.name)}</b> <span class="muted">${esc(c.email)}</span><div class="small muted">${esc(fmtDate(c.created_at))}</div></div>
         <div class="row">${c.status === "reversed" ? '<span class="badge neutral">Reversed</span>' : c.edited ? '<span class="badge low">Corrected</span>' : '<span class="badge in">Completed</span>'}
         <b>${c.total_units} item${c.total_units === 1 ? "" : "s"}</b></div></div>
-        <ul>${c.lines.map((l) => `<li>${esc(l.exam)} ${esc(l.edition)} — ${esc(l.type_name)}${l.form_name ? ": " + esc(l.form_name) : ""} <b>× ${l.qty}</b>${l.qty !== l.original_qty ? ` <span class="muted small">(originally ${l.original_qty})</span>` : ""}</li>`).join("")}</ul>
+        <ul>${c.lines.map((l) => `<li>${esc(l.exam)} ${esc(l.edition)} — ${esc(l.type_name)}${l.form_name ? ": " + esc(l.form_name) : ""} <b>× ${l.qty}</b>${l.material_type === "test_kit" ? ` <span class="muted small">(${l.returned_qty} returned)</span>` : ""}${l.qty !== l.original_qty ? ` <span class="muted small">(originally ${l.original_qty})</span>` : ""}</li>`).join("")}</ul>
         ${c.status === "reversed" ? `<div class="small muted">Reversed ${esc(fmtDate(c.reversed_at))} by ${esc(c.reversed_by || "")}: ${esc(c.reverse_reason || "")}</div>` : `<div class="row no-print"><button class="btn small" data-a="correct">Correct quantities</button><button class="btn small danger" data-a="reverse">Reverse checkout</button></div>`}</div>`
         )
         .join("");

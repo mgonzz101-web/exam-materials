@@ -27,7 +27,7 @@
   }
 
   function show(view) {
-    for (const v of ["browse", "cart", "receipt"]) $("#v-" + v).hidden = v !== view;
+    for (const v of ["browse", "cart", "receipt", "return"]) $("#v-" + v).hidden = v !== view;
     st.view = view;
     updateBar();
     window.scrollTo(0, 0);
@@ -408,6 +408,7 @@
         .map((l) => `<li><span>${esc(l.exam)}<br><span class="muted small">${esc([l.edition, l.type_name, l.form_name].filter(Boolean).join(" · "))}</span></span><b>× ${l.qty}</b></li>`)
         .join("")}</ul>
       <p><b>${r.total_units} total</b></p>
+      ${r.lines.some((l) => l.material_type === "test_kit") ? `<div class="notice"><b>Test kits need to come back.</b> When you're done, open this page again and tap <b>Returning a test kit</b>.</div>` : ""}
       <button class="btn primary block" id="again">Start a new checkout</button>`;
     $("#again").onclick = async () => {
       history.replaceState(null, "", location.pathname);
@@ -418,6 +419,110 @@
     };
     show("receipt");
   }
+
+  /* ---------- returning test kits ---------- */
+  function openReturn() {
+    const u = st.session.user;
+    $("#retEmail").value = u ? u.email : (LS.get("who_v1", {}).email || $("#retEmail").value || "");
+    $("#retEmail").readOnly = !!u;
+    $("#retList").innerHTML = "";
+    $("#retDone").hidden = true;
+    $("#retErr").hidden = true;
+    show("return");
+  }
+  $("#toReturn").onclick = openReturn;
+  $("#retBack").onclick = async () => {
+    show("browse");
+    try { await loadItems(); } catch (e) {}
+    renderFilters();
+    renderList();
+  };
+
+  async function findKits() {
+    const err = $("#retErr");
+    err.hidden = true;
+    $("#retDone").hidden = true;
+    try {
+      const r = await api("/api/loans/lookup", { method: "POST", body: { email: $("#retEmail").value.trim() } });
+      drawKits(r.loans);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+    }
+  }
+  $("#retFind").onclick = findKits;
+  $("#retEmail").addEventListener("keydown", (e) => e.key === "Enter" && findKits());
+
+  function drawKits(loans) {
+    const box = $("#retList");
+    if (!loans.length) {
+      box.innerHTML = `<div class="card">No test kits are checked out under that email. Double-check the address you used at checkout.</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="card"><h2>Kits you still have</h2>${loans
+      .map(
+        (l) => `<div class="cart-line" data-line="${l.line_id}" data-max="${l.outstanding}">
+          <div style="flex:1 1 200px"><b>${esc(l.label)}</b><div class="item-sub">Taken ${esc(fmtDate(l.created_at))} · ${l.outstanding} out</div></div>
+          <div class="item-act"><div class="stepper"><button type="button" data-act="dec" aria-label="Fewer">−</button>
+          <input data-qty inputmode="numeric" value="${l.outstanding}" aria-label="How many to return">
+          <button type="button" data-act="inc" aria-label="More">+</button></div></div></div>`
+      )
+      .join("")}
+      <p id="retErr2" class="form-error" role="alert" hidden></p>
+      <button class="btn primary block" id="retGo" style="margin-top:14px">Return these kits</button>
+      <p class="hint" style="text-align:center">Set a number to 0 for any kit you're keeping a bit longer.</p></div>`;
+  }
+
+  $("#retList").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-act]");
+    if (!b) return;
+    const row = b.closest(".cart-line");
+    const input = $("[data-qty]", row);
+    const max = Number(row.dataset.max);
+    let v = parseInt(input.value, 10) || 0;
+    v = b.dataset.act === "inc" ? Math.min(max, v + 1) : Math.max(0, v - 1);
+    input.value = v;
+  });
+  $("#retList").addEventListener("change", (e) => {
+    if (!e.target.matches("[data-qty]")) return;
+    const max = Number(e.target.closest(".cart-line").dataset.max);
+    e.target.value = Math.max(0, Math.min(parseInt(e.target.value, 10) || 0, max));
+  });
+  $("#retList").addEventListener("click", async (e) => {
+    if (e.target.id !== "retGo") return;
+    const btn = e.target;
+    const err = $("#retErr2");
+    err.hidden = true;
+    const lines = $$("#retList .cart-line")
+      .map((r) => ({ line_id: Number(r.dataset.line), qty: parseInt($("[data-qty]", r).value, 10) || 0 }))
+      .filter((l) => l.qty > 0);
+    if (!lines.length) {
+      err.textContent = "Choose at least one kit to return.";
+      err.hidden = false;
+      return;
+    }
+    let token = LS.get("ret_token", null);
+    if (!token) { token = uuid(); LS.set("ret_token", token); }
+    btn.disabled = true;
+    btn.textContent = "Returning…";
+    try {
+      const r = await api("/api/return", { method: "POST", body: { token, email: $("#retEmail").value.trim(), lines } });
+      LS.del("ret_token");
+      $("#retList").innerHTML = "";
+      const d = $("#retDone");
+      d.hidden = false;
+      d.innerHTML = `<div class="tick" aria-hidden="true">✓</div><h2>Thank you — returned!</h2>
+        ${r.duplicate ? `<p class="muted">This return was already recorded.</p>` : `<ul class="receipt-list">${r.returned.map((x) => `<li><span>${esc(x.label)}</span><b>× ${x.qty}</b></li>`).join("")}</ul>`}
+        <button class="btn primary block" id="retAgain">Done</button>`;
+      $("#retAgain").onclick = () => $("#retBack").click();
+    } catch (e2) {
+      err.textContent = e2.message;
+      err.hidden = false;
+      btn.disabled = false;
+      btn.textContent = "Return these kits";
+      if (e2.status === 409 || e2.status === 404) { LS.del("ret_token"); findKits(); }
+    }
+  });
 
   /* ---------- start ---------- */
   async function init() {

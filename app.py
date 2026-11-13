@@ -37,7 +37,8 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 if not os.path.isfile(os.path.join(STATIC_DIR, "shop.html")):
     STATIC_DIR = BASE_DIR
 WEB_EXTS = (".js", ".css", ".html")
-TYPES = {"record_form": "Record Form", "response_booklet": "Response Booklet"}
+TYPES = {"record_form": "Record Form", "response_booklet": "Response Booklet", "test_kit": "Test Kit"}
+RETURNABLE = "test_kit"  # items of this type come back; their stock is added back on return
 EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9-]{16,64}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(\.\d+)?Z?)?$")
@@ -541,7 +542,7 @@ def parse_item(b, creating):
     exam = s(b.get("exam"), "Exam name", 120, True)
     mt = b.get("material_type")
     if mt not in TYPES:
-        raise ApiError("Choose a material type: record form or response booklet.")
+        raise ApiError("Choose a material type: record form, response booklet, or test kit.")
     out = {
         "exam": exam,
         "edition": s(b.get("edition"), "Edition/version", 80),
@@ -595,7 +596,7 @@ def receipt_for(d, token):
     if not c:
         return None
     lines = d.execute(
-        "SELECT id, item_id, exam, edition, material_type, form_name, qty FROM checkout_lines WHERE checkout_id=? ORDER BY id",
+        "SELECT id, item_id, exam, edition, material_type, form_name, qty, returned_qty FROM checkout_lines WHERE checkout_id=? ORDER BY id",
         (c["id"],),
     ).all()
     c["lines"] = [
@@ -867,7 +868,7 @@ def load_checkouts(d, limit):
     ids = [c["id"] for c in cos]
     ph = ",".join("?" * len(ids))
     lines = d.execute(
-        f"SELECT id, checkout_id, item_id, exam, edition, material_type, form_name, qty, original_qty FROM checkout_lines WHERE checkout_id IN ({ph}) ORDER BY id",
+        f"SELECT id, checkout_id, item_id, exam, edition, material_type, form_name, qty, original_qty, returned_qty FROM checkout_lines WHERE checkout_id IN ({ph}) ORDER BY id",
         tuple(ids),
     ).all()
     by = defaultdict(list)
@@ -905,7 +906,8 @@ def admin_reverse(cid):
         if not c:
             raise ApiError("This checkout was not found or has already been reversed.", 409)
         lines = d.execute(
-            "SELECT item_id, qty FROM checkout_lines WHERE checkout_id=? AND qty>0 ORDER BY item_id", (cid,)
+            # Only what is still out: kits already returned were put back on the shelf by the return.
+            "SELECT item_id, qty - returned_qty AS qty FROM checkout_lines WHERE checkout_id=? AND qty-returned_qty>0 ORDER BY item_id", (cid,)
         ).all()
         for l in lines:
             row = d.execute(
@@ -939,7 +941,7 @@ def admin_correct(cid):
         if not c:
             raise ApiError("This checkout was not found or has already been reversed.", 409)
         lines = {l["id"]: l for l in d.execute(
-            "SELECT id, item_id, exam, edition, material_type, form_name, qty FROM checkout_lines WHERE checkout_id=?", (cid,)
+            "SELECT id, item_id, exam, edition, material_type, form_name, qty, returned_qty FROM checkout_lines WHERE checkout_id=?", (cid,)
         ).all()}
         want = {}
         for ch in changes:
@@ -947,6 +949,10 @@ def admin_correct(cid):
             if lid not in lines:
                 raise ApiError("That line does not belong to this checkout.")
             want[lid] = n(ch.get("qty"), "Quantity", 0, 10_000)
+            if want[lid] < lines[lid]["returned_qty"]:
+                raise ApiError(
+                    f"{lines[lid]['returned_qty']} of “{label_of(lines[lid])}” were already returned, so the quantity taken can't be less than that."
+                )
         if sum(want.get(i, l["qty"]) for i, l in lines.items()) <= 0:
             raise ApiError("To return everything, use “Reverse checkout” instead.")
         problems = []
@@ -978,6 +984,131 @@ def admin_correct(cid):
             raise ApiError("Not enough stock to increase that checkout.", 409, problems=problems)
     dispatch_alerts(alerts)
     return jsonify(ok=True, checkout=load_one(d, cid))
+
+
+# --------------------------------------------------------------------------- test kits: returns
+
+
+def do_return(d, line_id, qty, actor_name, actor_id, reason, alerts, email=None):
+    """Put `qty` of a checked-out test kit back into stock. Must run inside tx().
+
+    Safe against double returns: the line is only updated while `qty - returned_qty >= qty`,
+    and the checkout row is locked first so a simultaneous reversal can't also restore it."""
+    sql = ("SELECT l.id, l.checkout_id, l.item_id FROM checkout_lines l JOIN checkouts c ON c.id=l.checkout_id"
+           " WHERE l.id=? AND l.material_type=?")
+    params = [line_id, RETURNABLE]
+    if email is not None:
+        sql += " AND c.email=?"
+        params.append(email)
+    ln = d.execute(sql, tuple(params)).one()
+    if not ln:
+        raise ApiError("That kit wasn't found for this email address.", 404)
+    if not d.execute("UPDATE checkouts SET edited=edited WHERE id=? AND status='completed' RETURNING id",
+                     (ln["checkout_id"],)).one():
+        raise ApiError("That checkout was cancelled by an administrator, so there is nothing to return.", 409)
+    upd = d.execute(
+        "UPDATE checkout_lines SET returned_qty=returned_qty+? WHERE id=? AND qty-returned_qty>=? RETURNING id, qty, returned_qty",
+        (qty, line_id, qty),
+    ).one()
+    if not upd:
+        cur = d.execute("SELECT qty-returned_qty AS out FROM checkout_lines WHERE id=?", (line_id,)).one()
+        out = cur["out"] if cur else 0
+        raise ApiError("That kit has already been returned." if out <= 0 else f"Only {out} of that kit {'is' if out == 1 else 'are'} still out.", 409)
+    row = d.execute("UPDATE items SET quantity=quantity+?, updated_at=? WHERE id=? " + RET, (qty, utcnow(), ln["item_id"])).one()
+    add_movement(d, ln["item_id"], row["quantity"] - qty, row["quantity"], "return", reason, ln["checkout_id"],
+                 actor_name, actor_id)
+    apply_alert(d, row, "kit returned", alerts)  # re-arms the low-stock alert if we're back above the level
+    return row
+
+
+def loans_for(d, email=None):
+    sql = ("SELECT l.id AS line_id, l.exam, l.edition, l.material_type, l.form_name, l.qty, l.returned_qty,"
+           " l.qty-l.returned_qty AS outstanding, c.id AS checkout_id, c.name, c.email, c.created_at"
+           " FROM checkout_lines l JOIN checkouts c ON c.id=l.checkout_id"
+           " WHERE c.status='completed' AND l.material_type=? AND l.qty-l.returned_qty>0")
+    params = [RETURNABLE]
+    if email is not None:
+        sql += " AND c.email=?"
+        params.append(email)
+    rows = d.execute(sql + " ORDER BY c.created_at, l.id", tuple(params)).all()
+    for r in rows:
+        r["label"] = label_of(r)
+    return rows
+
+
+@app.post("/api/loans/lookup")
+def api_loans_lookup():
+    d = get_db()
+    b = body()
+    user = current_user()
+    if rl_blocked("lookup:" + client_ip(), 40, 900):
+        raise ApiError("Too many lookups. Please wait a few minutes.", 429)
+    rl_add("lookup:" + client_ip())
+    email = s(b.get("email") or (user["email"] if user else ""), "Email", 200, True).lower()
+    if not EMAIL_RE.match(email):
+        raise ApiError("Enter a valid email address.")
+    loans = [{k: r[k] for k in ("line_id", "label", "outstanding", "created_at", "name")} for r in loans_for(d, email)]
+    return jsonify(loans=loans)
+
+
+@app.post("/api/return")
+def api_return():
+    d = get_db()
+    b = body()
+    user = current_user()
+    if rl_blocked("ret:" + client_ip(), 60, 60):
+        raise ApiError("Too many requests. Please wait a moment.", 429)
+    rl_add("ret:" + client_ip())
+    token = str(b.get("token", ""))
+    if not TOKEN_RE.match(token):
+        raise ApiError("Invalid request. Please refresh the page.")
+    email = s(b.get("email") or (user["email"] if user else ""), "Email", 200, True).lower()
+    if not EMAIL_RE.match(email):
+        raise ApiError("Enter a valid email address.")
+    raw = b.get("lines")
+    if not isinstance(raw, list) or not raw or len(raw) > 60:
+        raise ApiError("Choose at least one kit to return.")
+    wanted = {}
+    for ln in raw:
+        if not isinstance(ln, dict):
+            raise ApiError("Invalid request.")
+        lid = n(ln.get("line_id"), "Kit", 1, 10**12)
+        wanted[lid] = wanted.get(lid, 0) + n(ln.get("qty"), "Quantity", 1, 10_000)
+    who = user["name"] if user and user["email"] == email else email
+    alerts, done = [], []
+    try:
+        with tx(d):
+            d.execute("INSERT INTO returns(token,email,created_at) VALUES(?,?,?)", (token, email, utcnow()))
+            for lid in sorted(wanted):
+                row = do_return(d, lid, wanted[lid], who, user["id"] if user and user["email"] == email else None,
+                                "Returned by borrower", alerts, email=email)
+                done.append({"line_id": lid, "qty": wanted[lid], "now_in_stock": row["quantity"],
+                             "label": label_of(row)})
+    except IntegrityError:
+        return jsonify(ok=True, duplicate=True, returned=[])  # same tap sent twice: already recorded
+    dispatch_alerts(alerts)
+    return jsonify(ok=True, duplicate=False, returned=done)
+
+
+@app.get("/api/admin/loans")
+@owner_required
+def admin_loans():
+    return jsonify(loans=loans_for(get_db()))
+
+
+@app.post("/api/admin/loans/<int:line_id>/return")
+@owner_required
+def admin_return(line_id):
+    d = get_db()
+    u = current_user()
+    b = body()
+    qty = n(b.get("qty"), "Quantity", 1, 10_000)
+    reason = s(b.get("reason"), "A reason", 300, True)
+    alerts = []
+    with tx(d):
+        do_return(d, line_id, qty, u["name"], u["id"], reason, alerts)
+    dispatch_alerts(alerts)
+    return jsonify(ok=True)
 
 
 # --------------------------------------------------------------------------- owner: audit, dashboard
@@ -1039,6 +1170,7 @@ def admin_dashboard():
     total_items = d.execute("SELECT COUNT(*) AS c FROM items").one()["c"]
     return jsonify(
         counts=counts,
+        kits_out=loans_for(d),
         total=len(items),
         needs_reordering=needs,
         checklist={
@@ -1272,11 +1404,13 @@ def export_transactions():
         for l in c["lines"]:
             rows.append([c["id"], c["created_at"], c["name"], c["email"], l["exam"], l["edition"], l["type_name"],
                          l["form_name"], l["qty"], l["original_qty"], c["status"],
-                         "yes" if c["edited"] else "no", c["reversed_at"] or "", c["reverse_reason"] or ""])
+                         "yes" if c["edited"] else "no", c["reversed_at"] or "", c["reverse_reason"] or "",
+                         l["returned_qty"] if l["material_type"] == RETURNABLE else ""])
     return csv_response(
         "checkout-history.csv",
         ["Checkout #", "Date/time (UTC)", "Name", "Email", "Exam", "Edition/Version", "Material type", "Form/Booklet",
-         "Quantity", "Originally taken", "Status", "Corrected", "Reversed at (UTC)", "Reversal reason"],
+         "Quantity", "Originally taken", "Status", "Corrected", "Reversed at (UTC)", "Reversal reason",
+         "Returned (test kits)"],
         rows,
     )
 
