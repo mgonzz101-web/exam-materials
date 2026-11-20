@@ -11,6 +11,14 @@
     removed: "Stock removed",
     count: "Physical count",
     return: "Kit returned",
+    return_issue: "Kit returned (problem)",
+    kit_status: "Kit status changed",
+  };
+  const KSTAT = { available: "Available", out: "Checked out", attention: "Needs attention", lost: "Lost / missing", retired: "Retired" };
+  const TEMPLATES = {
+    "WISC-V": ["Admin and scoring manual","Technical manual","Scoring supplement","Stim book 1","Stim book 2","Stim book 3","Coding A Scoring Template","Coding B Scoring Template","Cancellation Scoring Template","Symbol Search Template (pgs 8-11, pgs 14-19)","Blocks (x9)","Red pencil","Pencil without an eraser"],
+    "KABC-II NU": ["Admin manual","Manual supplement","Easel 1","Easel 2","Easel 3","Easel 4","Rover Stimulus Booklet","Story Completion Book Stimulus","Story Completion Cards","Word order - Blank Covering card","Word order - Card shapes","Small Black Rover dog","Foam triangles (x9)","Large blue squares (x2)","Large red circles (x2)","Small yellow circles (x2)","Small red circles (x2)","Small yellow squares (x2)","Small blue squares (x2)","Yellow cubes (x4)","Yellow triangle (large)","Yellow triangle (small)","Small red triangles (x2)"],
+    "DAS-II NU": ["Admin and scoring manual","Normative data tables manual","Introductory and technical manual","Stimulus Book 1","Stimulus Book 2","Stimulus Book 3","Stimulus Book 4","Object recall card","Teddy Bear photo","Scoring template for drawing subtest","CD: Phonological processing audio and signed standard sentences video","Verbal comprehension insert tray","Verbal comprehension box of toys (watch, dog, cat, horse, and car)","Picture similarities cards (x32)","Wooden building blocks (x8)","Green tiles (x10)","Red shapes (circle, square, triangle)","Yellow shapes (circle, square, triangle)","Blue shapes (circle, square, triangle)","Black/yellow foam squares (x6)","Black/yellow cubes (x9)"],
   };
   const ALERT_TXT = {
     sent: (a) => `Emailed ${fmtDate(a.at)}`,
@@ -132,10 +140,19 @@
             <td class="small">${esc(alertText(i))}</td><td><button class="btn small primary" data-adj="${i.id}" data-mode="add">Restock</button></td></tr>`).join("")}
           </tbody></table></div>` : `<p class="muted">Every active item is above its low-stock level.</p>`}
       </div>
-      ${(dash.kits_out || []).length ? `<div class="card"><h2>Test kits currently out (${dash.kits_out.reduce((a, k) => a + k.outstanding, 0)})</h2>
-        <div class="table-wrap"><table><thead><tr><th>Kit</th><th class="num">Out</th><th>Who</th><th>Since</th><th></th></tr></thead><tbody>
-        ${dash.kits_out.map((k) => `<tr><td>${esc(k.label)}</td><td class="num qty">${k.outstanding}</td><td>${esc(k.name)}<div class="small muted">${esc(k.email)}</div></td><td class="small">${esc(fmtDate(k.created_at))}</td>
-          <td><button class="btn small" data-kit="${k.line_id}" data-out="${k.outstanding}" data-label="${esc(k.label)}">Mark returned</button></td></tr>`).join("")}
+      ${(dash.kits_attention || []).length ? `<div class="card reorder"><h2>🔧 Kits needing attention (${dash.kits_attention.length})</h2>
+        <p class="muted small">Reported by students at return. These are not counted as available until you clear them.</p>
+        <div class="table-wrap"><table><thead><tr><th>Kit</th><th>Reported</th><th>By / when</th><th></th></tr></thead><tbody>
+        ${dash.kits_attention.map((k) => `<tr><td><b>${esc(k.label)}</b></td>
+          <td>${k.missing.length ? `<b>Missing/damaged:</b> ${k.missing.map(esc).join(", ")}` : ""}${k.issue_note ? `<div class="small muted">${esc(k.issue_note)}</div>` : ""}</td>
+          <td class="small">${esc(k.issue_by || "")}<div class="muted">${esc(fmtDate(k.issue_at))}</div></td>
+          <td><div class="row" style="flex-wrap:nowrap"><button class="btn small primary" data-fix="${k.kit_id}" data-label="${esc(k.label)}">Fixed — back in stock</button>
+          <button class="btn small ghost" data-lost="${k.kit_id}" data-label="${esc(k.label)}">Mark lost</button></div></td></tr>`).join("")}
+        </tbody></table></div></div>` : ""}
+      ${(dash.kits_out || []).length ? `<div class="card"><h2>Test kits currently out (${dash.kits_out.length})</h2>
+        <div class="table-wrap"><table><thead><tr><th>Kit</th><th>Who</th><th>Since</th><th></th></tr></thead><tbody>
+        ${dash.kits_out.map((k) => `<tr><td><b>${esc(k.label)}</b></td><td>${esc(k.name)}<div class="small muted">${esc(k.email)}</div></td><td class="small">${esc(fmtDate(k.created_at))}</td>
+          <td><button class="btn small" data-kit="${k.kit_id}" data-label="${esc(k.label)}" data-contents="${esc(JSON.stringify(k.contents || []))}">Mark returned</button></td></tr>`).join("")}
         </tbody></table></div></div>` : ""}
       <div class="tiles">
         <div class="tile"><span class="muted small">Active items</span><b>${dash.total}</b></div>
@@ -169,6 +186,8 @@
       };
     $$("[data-goto]").forEach((b) => (b.onclick = () => go(b.dataset.goto)));
     $$("[data-kit]").forEach((b) => (b.onclick = () => kitReturnModal(b.dataset)));
+    $$("[data-fix]").forEach((b) => (b.onclick = () => setKitStatus(Number(b.dataset.fix), "available", b.dataset.label)));
+    $$("[data-lost]").forEach((b) => (b.onclick = () => setKitStatus(Number(b.dataset.lost), "lost", b.dataset.label)));
     $$("[data-adj]").forEach((b) => (b.onclick = () => adjustModal(S.items.find((i) => i.id === Number(b.dataset.adj)), b.dataset.mode)));
   }
 
@@ -185,11 +204,11 @@
           .map(
             (i) => `<tr class="${i.archived ? "archived" : ""}"><td><b>${esc(i.exam)}</b><div class="small muted">${esc(i.edition)}</div></td>
         <td>${esc(i.type_name)}<div class="small muted">${esc(i.form_name)}</div></td>
-        <td class="num qty">${i.quantity}</td><td class="num">${i.low_threshold}</td>
+        <td class="num qty">${i.quantity}${i.kit_counts ? `<div class="small muted" style="font-weight:400">${["out", "attention", "lost"].filter((s) => i.kit_counts[s]).map((s) => i.kit_counts[s] + " " + KSTAT[s].toLowerCase()).join(" · ")}</div>` : ""}</td><td class="num">${i.low_threshold}</td>
         <td>${i.archived ? '<span class="badge neutral">Archived</span>' : badge(i.status)}</td>
         <td class="small">${esc(i.location)}${i.notes ? `<div class="muted">${esc(i.notes)}</div>` : ""}</td>
         <td><div class="row" style="flex-wrap:nowrap">
-          <button class="btn small primary" data-a="adj" data-id="${i.id}">Adjust</button>
+          ${i.material_type === "test_kit" ? `<button class="btn small primary" data-a="kits" data-id="${i.id}">Manage kits</button>` : `<button class="btn small primary" data-a="adj" data-id="${i.id}">Adjust</button>`}
           <button class="btn small" data-a="edit" data-id="${i.id}">Edit</button>
           <button class="btn small ghost" data-a="arch" data-id="${i.id}">${i.archived ? "Restore" : "Archive"}</button></div></td></tr>`
           )
@@ -200,6 +219,7 @@
         (b.onclick = async () => {
           const it = S.items.find((x) => x.id === Number(b.dataset.id));
           if (b.dataset.a === "adj") adjustModal(it);
+          if (b.dataset.a === "kits") manageKitsModal(it);
           if (b.dataset.a === "edit") itemModal(it);
           if (b.dataset.a === "arch") {
             if (!it.archived && !confirm(`Archive “${it.exam} — ${it.type_name}”? It will disappear from the checkout page. You can restore it later.`)) return;
@@ -224,7 +244,13 @@
         <label for="x_ed">Edition / version</label><input id="x_ed" value="${esc(it?.edition || "")}" placeholder="e.g. 5th Edition">
         <label for="x_type">Material type</label><select id="x_type"><option value="record_form">Record form</option><option value="response_booklet">Response booklet</option><option value="test_kit">Test kit (checked out and returned)</option></select>
         <label for="x_fn">Specific form or booklet name <span class="muted">(optional)</span></label><input id="x_fn" value="${esc(it?.form_name || "")}" placeholder="e.g. Response Booklet 1">
-        ${editing ? "" : `<label for="x_q">Starting quantity <span class="muted">(individual forms, not packs)</span></label><input id="x_q" inputmode="numeric" value="0">`}
+        ${editing ? "" : `<label for="x_q" id="x_qlbl">Starting quantity <span class="muted">(individual forms, not packs)</span></label><input id="x_q" inputmode="numeric" value="0">
+        <div class="hint" id="x_qhint" hidden>Kits are numbered #1, #2, #3… To add specific numbers later (like 1, 3, 4, 5), use <b>Manage kits</b>.</div>`}
+        <div id="x_cwrap" hidden>
+          <label for="x_c">What's in each kit <span class="muted">(one item per line — students tick what's missing when they return it)</span></label>
+          <textarea id="x_c" rows="8" placeholder="Admin and scoring manual&#10;Stim book 1&#10;Blocks (x9)">${esc((it?.contents || []).join("\n"))}</textarea>
+          <div class="row" style="margin-top:6px"><span class="small muted">Fill from a template:</span>${Object.keys(TEMPLATES).map((k) => `<button type="button" class="btn small ghost" data-tpl="${esc(k)}">${esc(k)}</button>`).join("")}</div>
+        </div>
         <label for="x_t">Low-stock alert level</label><input id="x_t" inputmode="numeric" value="${it ? it.low_threshold : 5}">
         <div class="hint">You’ll be alerted when the quantity reaches or drops below this number.</div>
         <label for="x_loc">Storage location <span class="muted">(optional)</span></label><input id="x_loc" value="${esc(it?.location || "")}">
@@ -232,6 +258,18 @@
         ${editing ? `<p class="hint">To change the quantity, use <b>Adjust</b> so the change is recorded with a reason.</p>` : ""}`,
       onMount(f) {
         $("#x_type", f).value = it?.material_type || "record_form";
+        const upd = () => {
+          const kit = $("#x_type", f).value === "test_kit";
+          $("#x_cwrap", f).hidden = !kit;
+          if (!editing) {
+            $("#x_qhint", f).hidden = !kit;
+            $("#x_qlbl", f).innerHTML = kit ? "How many kits do you have? <span class=\"muted\">(numbered #1 to #N)</span>" : "Starting quantity <span class=\"muted\">(individual forms, not packs)</span>";
+          }
+          if (editing) $("#x_type", f).disabled = true;
+        };
+        $("#x_type", f).addEventListener("change", upd);
+        upd();
+        $$("[data-tpl]", f).forEach((b) => (b.onclick = () => { $("#x_c", f).value = TEMPLATES[b.dataset.tpl].join("\n"); }));
       },
       async onSubmit(f) {
         const body = {
@@ -242,7 +280,9 @@
           low_threshold: $("#x_t", f).value,
           location: $("#x_loc", f).value,
           notes: $("#x_n", f).value,
+          contents: $("#x_c", f).value,
         };
+        if (editing) body.material_type = it.material_type;
         if (!editing) body.quantity = $("#x_q", f).value;
         await api(editing ? `/api/admin/items/${it.id}` : "/api/admin/items", { method: editing ? "PUT" : "POST", body });
         toast(editing ? "Saved" : "Item added", "good");
@@ -252,16 +292,127 @@
   }
 
   function kitReturnModal(k) {
+    const contents = JSON.parse(k.contents || "[]");
     modal({
       title: "Mark kit returned",
       submit: "Mark returned",
-      body: `<p><b>${esc(k.label)}</b><br>${k.out} currently out.</p>
-        <label for="kq">How many came back?</label><input id="kq" inputmode="numeric" value="${k.out}">
-        <label for="kr">Note <span class="muted">(required)</span></label><input id="kr" maxlength="300" value="Returned in person">`,
+      body: `<p><b>${esc(k.label)}</b></p>
+        <div class="seg" role="radiogroup">
+          <label><input type="radio" name="cond" value="ok" checked><span>Everything is here <span class="muted small">(goes back in stock)</span></span></label>
+          <label><input type="radio" name="cond" value="attention"><span>Something is missing or damaged <span class="muted small">(held back until you clear it)</span></span></label>
+          <label><input type="radio" name="cond" value="lost"><span>Never came back / lost</span></label></div>
+        <div id="kmiss" hidden>${contents.map((c) => `<label class="chk"><input type="checkbox" data-miss value="${esc(c)}"> <span>${esc(c)}</span></label>`).join("")}</div>
+        <label for="kn">Note <span class="muted">(optional)</span></label><input id="kn" maxlength="300">`,
+      onMount(f) {
+        $$("[name=cond]", f).forEach((r) => r.addEventListener("change", () => ($("#kmiss", f).hidden = $("[name=cond]:checked", f).value !== "attention")));
+      },
       async onSubmit(f) {
-        await api(`/api/admin/loans/${k.kit}/return`, { method: "POST", body: { qty: $("#kq", f).value, reason: $("#kr", f).value } });
+        const cond = $("[name=cond]:checked", f).value;
+        await api(`/api/admin/loans/${k.kit}/return`, { method: "POST", body: { condition: cond, missing: cond === "attention" ? $$("[data-miss]:checked", f).map((c) => c.value) : [], note: $("#kn", f).value } });
         toast("Marked returned — stock updated", "good");
         go("dashboard");
+      },
+    });
+  }
+
+  async function setKitStatus(kitId, status, label) {
+    if (status === "lost" && !confirm(`Mark ${label} as lost? It won't be counted as available.`)) return;
+    try {
+      await api(`/api/admin/kits/${kitId}`, { method: "PUT", body: { status, note: status === "available" ? "" : "Marked lost by owner" } });
+      toast(status === "available" ? "Back in stock" : "Marked lost", "good");
+      go("dashboard");
+    } catch (e) {
+      toast(e.message, "bad");
+    }
+  }
+
+  function kitEditModal(it, k) {
+    const out = k.status === "out";
+    const again = () => { manageKitsModal(it); if (S.tab === "dashboard") renderDashboard(); };
+    const m = modal({
+      title: `Kit #${k.number} — ${it.exam}`,
+      submit: "Save kit",
+      wide: true,
+      body: `${out ? `<p class="notice">This kit is checked out${k.borrower ? " by " + esc(k.borrower) : ""}. You can edit its contents list now; mark it returned from the dashboard to change its status.</p>` : `
+        <label for="ks">Status</label><select id="ks">${["available", "attention", "lost", "retired"].map((s) => `<option value="${s}" ${s === k.status ? "selected" : ""}>${KSTAT[s]}</option>`).join("")}</select>
+        <div id="kmw"><label>Missing or damaged <span class="muted">(tick what's wrong — the kit is then held back as “Needs attention”)</span></label>
+        <div id="kmlist"></div>
+        <label for="kn2">Note <span class="muted">(optional)</span></label><input id="kn2" maxlength="300" value="${esc(k.issue_note || "")}"></div>`}
+        <label for="kc">What's in this kit <span class="muted">(one item per line — only for kit #${k.number})</span></label>
+        <textarea id="kc" rows="9">${esc(k.contents.join("\n"))}</textarea>
+        <div class="row" style="margin-top:6px"><button type="button" class="btn small ghost" id="kreset">Use the shared list for all ${esc(it.exam)} kits</button>
+        <span class="small muted">${k.custom ? "This kit has its own list." : "Currently using the shared list."}</span></div>`,
+      onMount(f) {
+        let reset = false;
+        const draw = () => {
+          if (out) return;
+          const items = $("#kc", f).value.split("\n").map((x) => x.trim()).filter(Boolean);
+          const checked = new Set($$("[data-miss]:checked", f).map((c) => c.value).concat(draw.first ? [] : k.missing));
+          draw.first = true;
+          $("#kmlist", f).innerHTML = items.map((c) => `<label class="chk"><input type="checkbox" data-miss value="${esc(c)}" ${checked.has(c) ? "checked" : ""}> <span>${esc(c)}</span></label>`).join("") || `<p class="muted small">Add items to the list below first.</p>`;
+        };
+        draw();
+        $("#kc", f).addEventListener("change", draw);
+        $("#kreset", f).onclick = () => { $("#kc", f).value = it.contents.join("\n"); reset = true; draw(); };
+        f._reset = () => reset;
+      },
+      async onSubmit(f) {
+        const text = $("#kc", f).value;
+        const same = text.split("\n").map((x) => x.trim()).filter(Boolean).join("\n") === it.contents.join("\n");
+        const mustReset = f._reset() || (same && !k.custom ? false : same);
+        if (same && k.custom) await api(`/api/admin/kits/${k.id}/contents`, { method: "PUT", body: { contents: "" } });
+        else if (!same) await api(`/api/admin/kits/${k.id}/contents`, { method: "PUT", body: { contents: text } });
+        if (!out) {
+          const missing = $$("[data-miss]:checked", f).map((c) => c.value);
+          const note = $("#kn2", f).value;
+          let status = $("#ks", f).value;
+          if (missing.length && status === "available") status = "attention";
+          const changed = status !== k.status || missing.join("|") !== k.missing.join("|") || note !== (k.issue_note || "");
+          if (changed) await api(`/api/admin/kits/${k.id}`, { method: "PUT", body: { status, missing: status === "available" ? [] : missing, note: status === "available" ? "" : note } });
+        }
+        toast("Saved", "good");
+        setTimeout(again, 0);
+      },
+    });
+  }
+
+  async function manageKitsModal(it) {
+    let data;
+    try {
+      data = await api(`/api/admin/items/${it.id}/kits`);
+    } catch (e) {
+      return toast(e.message, "bad");
+    }
+    const m = modal({
+      title: `Manage kits — ${it.exam}`,
+      submit: "",
+      wide: true,
+      body: `<p class="muted small">Each kit has its own number. Only <b>Available</b> kits can be taken by students.</p>
+        <div class="table-wrap"><table><thead><tr><th>Kit</th><th>Status</th><th>Notes</th><th></th></tr></thead><tbody>
+        ${data.kits.map((k) => `<tr data-k="${k.id}"><td><b>#${k.number}</b>${k.custom ? `<div class="small muted">own list</div>` : ""}</td>
+          <td>${k.status === "out" ? `<span class="badge neutral">Checked out</span>${k.borrower ? `<div class="small muted">${esc(k.borrower)}</div>` : ""}` : `<span class="badge ${k.status === "available" ? "in" : k.status === "attention" ? "low" : "neutral"}">${KSTAT[k.status]}</span>`}</td>
+          <td class="small">${k.missing.length ? "Missing: " + k.missing.map(esc).join(", ") : ""}${k.issue_note ? `<div class="muted">${esc(k.issue_note)}</div>` : ""}</td>
+          <td><button type="button" class="btn small" data-edit>Edit</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">No kits yet.</td></tr>`}
+        </tbody></table></div>
+        <h3 style="margin-top:16px">Add kits</h3>
+        <label for="kadd">Kit numbers <span class="muted">(e.g. 1, 3, 4-6)</span></label><input id="kadd" placeholder="12 or 12-14">
+        <label for="kst">Add them as</label><select id="kst"><option value="available">Available</option><option value="lost">Lost / missing</option><option value="retired">Retired</option></select>
+        <button type="button" class="btn primary" id="kaddgo" style="margin-top:10px">Add kits</button>`,
+      onMount(f) {
+        $$("[data-edit]", f).forEach((b) => (b.onclick = () => {
+          const k = data.kits.find((x) => x.id === Number(b.closest("tr").dataset.k));
+          m.close();
+          kitEditModal(it, k);
+        }));
+        $("#kaddgo", f).onclick = async () => {
+          try {
+            const r = await api(`/api/admin/items/${it.id}/kits`, { method: "POST", body: { numbers: $("#kadd", f).value, status: $("#kst", f).value } });
+            toast(r.added.length ? `Added ${r.added.length} kit(s)` + (r.skipped.length ? ` (already had ${r.skipped.join(", ")})` : "") : "Those numbers already exist", r.added.length ? "good" : "bad");
+            m.close();
+            manageKitsModal(it);
+            if (S.tab === "dashboard") renderDashboard();
+          } catch (e) { toast(e.message, "bad"); }
+        };
       },
     });
   }
@@ -361,7 +512,7 @@
         <div class="row spread"><div><b>#${c.id} · ${esc(c.name)}</b> <span class="muted">${esc(c.email)}</span><div class="small muted">${esc(fmtDate(c.created_at))}</div></div>
         <div class="row">${c.status === "reversed" ? '<span class="badge neutral">Reversed</span>' : c.edited ? '<span class="badge low">Corrected</span>' : '<span class="badge in">Completed</span>'}
         <b>${c.total_units} item${c.total_units === 1 ? "" : "s"}</b></div></div>
-        <ul>${c.lines.map((l) => `<li>${esc(l.exam)} ${esc(l.edition)} — ${esc(l.type_name)}${l.form_name ? ": " + esc(l.form_name) : ""} <b>× ${l.qty}</b>${l.material_type === "test_kit" ? ` <span class="muted small">(${l.returned_qty} returned)</span>` : ""}${l.qty !== l.original_qty ? ` <span class="muted small">(originally ${l.original_qty})</span>` : ""}</li>`).join("")}</ul>
+        <ul>${c.lines.map((l) => `<li>${esc(l.exam)} ${esc(l.edition)} — ${esc(l.type_name)}${l.form_name ? ": " + esc(l.form_name) : ""} <b>× ${l.qty}</b>${l.material_type === "test_kit" ? ` <b>${(l.kits || []).map((k) => "#" + k.number + (k.returned ? " ✓" : "")).join(", ")}</b> <span class="muted small">(${l.returned_qty} returned)</span>` : ""}${l.qty !== l.original_qty ? ` <span class="muted small">(originally ${l.original_qty})</span>` : ""}</li>`).join("")}</ul>
         ${c.status === "reversed" ? `<div class="small muted">Reversed ${esc(fmtDate(c.reversed_at))} by ${esc(c.reversed_by || "")}: ${esc(c.reverse_reason || "")}</div>` : `<div class="row no-print"><button class="btn small" data-a="correct">Correct quantities</button><button class="btn small danger" data-a="reverse">Reverse checkout</button></div>`}</div>`
         )
         .join("");

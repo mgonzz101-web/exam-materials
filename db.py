@@ -117,6 +117,7 @@ def init_schema(d):
                 low_threshold INTEGER NOT NULL DEFAULT 5 CHECK (low_threshold >= 0),
                 location TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL DEFAULT '',
+                contents TEXT NOT NULL DEFAULT '',
                 archived INTEGER NOT NULL DEFAULT 0,
                 alert_active INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -144,6 +145,27 @@ def init_schema(d):
                 qty INTEGER NOT NULL CHECK (qty >= 0),
                 original_qty INTEGER NOT NULL,
                 returned_qty INTEGER NOT NULL DEFAULT 0)""",
+            f"""CREATE TABLE IF NOT EXISTS kits (
+                id {pk},
+                item_id BIGINT NOT NULL REFERENCES items(id),
+                number INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'available',
+                issue_items TEXT NOT NULL DEFAULT '',
+                issue_note TEXT NOT NULL DEFAULT '',
+                issue_by TEXT NOT NULL DEFAULT '',
+                issue_at TEXT,
+                contents TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                UNIQUE (item_id, number))""",
+            f"""CREATE TABLE IF NOT EXISTS checkout_kits (
+                id {pk},
+                line_id BIGINT NOT NULL,
+                checkout_id BIGINT NOT NULL,
+                kit_id BIGINT NOT NULL REFERENCES kits(id),
+                returned_at TEXT)""",
+            "CREATE INDEX IF NOT EXISTS idx_ck_line ON checkout_kits(line_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ck_kit ON checkout_kits(kit_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ck_checkout ON checkout_kits(checkout_id)",
             f"""CREATE TABLE IF NOT EXISTS returns (
                 id {pk},
                 token TEXT NOT NULL UNIQUE,
@@ -186,7 +208,14 @@ def init_schema(d):
         # Upgrade databases created before test-kit returns existed.
         if IS_PG:
             d.execute("ALTER TABLE checkout_lines ADD COLUMN IF NOT EXISTS returned_qty INTEGER NOT NULL DEFAULT 0")
+            d.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS contents TEXT NOT NULL DEFAULT ''")
+            d.execute("ALTER TABLE kits ADD COLUMN IF NOT EXISTS contents TEXT NOT NULL DEFAULT ''")
         else:
+            if "contents" not in [r["name"] for r in d.execute("PRAGMA table_info(kits)").all()]:
+                d.execute("ALTER TABLE kits ADD COLUMN contents TEXT NOT NULL DEFAULT ''")
+            icols = [r["name"] for r in d.execute("PRAGMA table_info(items)").all()]
+            if "contents" not in icols:
+                d.execute("ALTER TABLE items ADD COLUMN contents TEXT NOT NULL DEFAULT ''")
             cols = [r["name"] for r in d.execute("PRAGMA table_info(checkout_lines)").all()]
             if "returned_qty" not in cols:
                 d.execute("ALTER TABLE checkout_lines ADD COLUMN returned_qty INTEGER NOT NULL DEFAULT 0")
