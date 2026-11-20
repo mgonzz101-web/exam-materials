@@ -1235,7 +1235,7 @@ def do_return_kit(d, kit_id, who, who_id, alerts, email=None, condition="ok", mi
 def loans_for(d, email=None):
     """Every numbered kit that is currently out (optionally only for one email address)."""
     sql = ("SELECT ck.kit_id, ck.line_id, k.number, c.id AS checkout_id, c.name, c.email, c.created_at,"
-           " i.id AS item_id, i.exam, i.edition, i.form_name, CASE WHEN k.contents<>'' THEN k.contents ELSE i.contents END AS contents"
+           " i.id AS item_id, i.exam, i.edition, i.form_name, i.contents"
            " FROM checkout_kits ck JOIN kits k ON k.id=ck.kit_id JOIN checkouts c ON c.id=ck.checkout_id"
            " JOIN items i ON i.id=k.item_id WHERE ck.returned_at IS NULL AND c.status='completed'")
     params = []
@@ -1372,39 +1372,13 @@ def admin_kits(item_id):
     d = get_db()
     it = _kit_item(d, item_id)
     rows = d.execute(
-        "SELECT k.id, k.number, k.status, k.issue_items, k.issue_note, k.issue_by, k.issue_at, k.contents AS own_contents,"
+        "SELECT k.id, k.number, k.status, k.issue_items, k.issue_note, k.issue_by, k.issue_at,"
         " (SELECT c.name FROM checkout_kits ck JOIN checkouts c ON c.id=ck.checkout_id WHERE ck.kit_id=k.id"
         "  AND ck.returned_at IS NULL AND c.status='completed' ORDER BY ck.id DESC LIMIT 1) AS borrower"
         " FROM kits k WHERE k.item_id=? ORDER BY k.number", (item_id,)).all()
     for r in rows:
         r["missing"] = contents_list(r.pop("issue_items"))
-        r["custom"] = bool(r["own_contents"])
-        r["contents"] = contents_list(r.pop("own_contents")) or contents_list(it["contents"])
     return jsonify(item=item_json(it, True), kits=rows, contents=contents_list(it["contents"]))
-
-
-@app.put("/api/admin/kits/<int:kit_id>/contents")
-@owner_required
-def admin_kit_contents(kit_id):
-    """Give one kit its own contents list (empty = go back to the item's shared list)."""
-    d = get_db()
-    u = current_user()
-    raw = body().get("contents", "")
-    if isinstance(raw, list):
-        raw = "\n".join(str(x) for x in raw)
-    lines = [x.strip() for x in str(raw or "").splitlines() if x.strip()]
-    if len(lines) > 80 or any(len(x) > 120 for x in lines):
-        raise ApiError("Kit contents: please use at most 80 lines of 120 characters each.")
-    with tx(d):
-        k = d.execute("SELECT id, item_id, number FROM kits WHERE id=?" + FOR_UPDATE, (kit_id,)).one()
-        if not k:
-            raise ApiError("Kit not found.", 404)
-        d.execute("UPDATE kits SET contents=? WHERE id=?", ("\n".join(lines), kit_id))
-        row = d.execute(f"SELECT {ITEM_ROW} FROM items WHERE id=?", (k["item_id"],)).one()
-        add_movement(d, k["item_id"], row["quantity"], row["quantity"], "kit_status",
-                     f"Kit #{k['number']}: contents list " + ("customized" if lines else "reset to the item's list"),
-                     None, u["name"], u["id"])
-    return jsonify(ok=True)
 
 
 @app.post("/api/admin/items/<int:item_id>/kits")

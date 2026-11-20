@@ -5,6 +5,7 @@
     items: [],
     byId: new Map(),
     cart: LS.get("cart_v1", {}), // { itemId: qty } — lives only in this browser until checkout succeeds
+    kc: LS.get("kitcart_v1", {}), // { itemId: [kitId, ...] } — specific numbered test kits chosen
     pending: {}, // qty chosen on the stepper before "Add"
     q: "",
     type: "all",
@@ -14,10 +15,21 @@
     submitting: false,
   };
 
-  const saveCart = () => LS.set("cart_v1", st.cart);
-  const cartIds = () => Object.keys(st.cart).map(Number);
-  const cartUnits = () => cartIds().reduce((a, id) => a + st.cart[id], 0);
+  const KIT = "test_kit";
+  const saveCart = () => {
+    for (const k of Object.keys(st.kc)) if (!st.kc[k] || !st.kc[k].length) delete st.kc[k];
+    LS.set("cart_v1", st.cart);
+    LS.set("kitcart_v1", st.kc);
+  };
+  const cartIds = () => [...new Set([...Object.keys(st.cart), ...Object.keys(st.kc).filter((k) => st.kc[k].length)].map(Number))];
+  const cartQty = (id) => (st.kc[id] && st.kc[id].length ? st.kc[id].length : st.cart[id] || 0);
+  const cartUnits = () => cartIds().reduce((a, id) => a + cartQty(id), 0);
   const avail = (it) => (it ? it.quantity : 0);
+  const kitNums = (it) => new Map((it.kits || []).map((k) => [k.id, k.number]));
+  const contentsHtml = (it) =>
+    it.contents && it.contents.length
+      ? `<details class="small kit-contents"><summary>What's in this kit (${it.contents.length})</summary><ul>${it.contents.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></details>`
+      : "";
 
   /* ---------- loading ---------- */
   async function loadItems() {
@@ -132,7 +144,8 @@
         html += `<h2 class="exam-h">${esc(it.exam)}</h2>`;
         last = it.exam;
       }
-      const inCart = st.cart[it.id] || 0;
+      const isKit = it.material_type === KIT;
+      const inCart = cartQty(it.id);
       const room = it.quantity - inCart;
       const want = Math.max(1, Math.min(st.pending[it.id] || 1, Math.max(room, 1)));
       const out = it.quantity <= 0;
@@ -146,11 +159,16 @@
           <div class="item-title">${esc(it.type_name)}${it.edition ? " · " + esc(it.edition) : ""}</div>
           <div class="item-sub">${esc(it.form_name || "")}${it.form_name && it.location ? " · " : ""}${it.location ? "Stored: " + esc(it.location) : ""}</div>
           ${stock}${inCart ? ` <span class="badge neutral">${inCart} in cart</span>` : ""}
+          ${isKit ? contentsHtml(it) : ""}
         </div>
         <div class="item-act">
           ${
             out
               ? `<span class="muted"><b>Out of stock</b></span>`
+              : isKit
+              ? `<div class="kitpick"><div class="small muted">Tap the kit number you're taking:</div><div class="kitgrid">${(it.kits || [])
+                  .map((k) => `<button type="button" class="chip" data-kit="${k.id}" aria-pressed="${(st.kc[it.id] || []).includes(k.id)}">#${k.number}</button>`)
+                  .join("")}</div></div>`
               : room <= 0
               ? `<span class="muted small">All available are in your cart</span>`
               : `<div class="stepper"><button type="button" data-act="dec" aria-label="Fewer">−</button>
@@ -164,6 +182,17 @@
   }
 
   $("#list").addEventListener("click", (e) => {
+    const kb = e.target.closest("[data-kit]");
+    if (kb) {
+      const id = Number(kb.closest(".item").dataset.id);
+      const kid = Number(kb.dataset.kit);
+      const cur = st.kc[id] || [];
+      st.kc[id] = cur.includes(kid) ? cur.filter((x) => x !== kid) : [...cur, kid];
+      saveCart();
+      renderList();
+      updateBar();
+      return;
+    }
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const row = b.closest(".item");
@@ -224,7 +253,11 @@
     for (const id of cartIds()) {
       const it = st.byId.get(id);
       if (!it) bad[id] = "No longer listed";
-      else if (it.quantity <= 0) bad[id] = "Out of stock";
+      else if (it.material_type === KIT) {
+        const ok = kitNums(it);
+        const gone = (st.kc[id] || []).filter((k) => !ok.has(k));
+        if (gone.length) bad[id] = "Someone else already took a kit you picked";
+      } else if (it.quantity <= 0) bad[id] = "Out of stock";
       else if (st.cart[id] > it.quantity) bad[id] = `Only ${it.quantity} available`;
     }
     return bad;
@@ -259,6 +292,16 @@
         const sub = it ? [it.edition, it.form_name].filter(Boolean).map(esc).join(" · ") : "";
         const msg = bad[id] || (probMap[id] ? (probMap[id].available ? `Only ${probMap[id].available} available now` : "Not available") : "");
         const max = avail(it);
+        if (it && it.material_type === KIT) {
+          const nums = kitNums(it);
+          const chips = (st.kc[id] || [])
+            .map((k) => `<button type="button" class="chip" data-kitrm="${k}" aria-label="Remove kit ${nums.get(k) || ""}" ${nums.has(k) ? "" : 'style="opacity:.5;text-decoration:line-through"'}>#${nums.get(k) || "?"} ✕</button>`)
+            .join("");
+          return `<div class="cart-line ${msg ? "bad" : ""}" data-id="${id}">
+            <div style="flex:1 1 200px"><b>${title}</b><div class="item-sub">${sub}</div>${msg ? `<b style="color:var(--bad)">${esc(msg)}</b>` : ""}
+            <div class="kitgrid" style="margin-top:6px">${chips}</div></div>
+            <div class="item-act"><button type="button" class="btn small ghost" data-act="rm">Remove</button></div></div>`;
+        }
         return `<div class="cart-line ${msg ? "bad" : ""}" data-id="${id}">
           <div style="flex:1 1 200px"><b>${title}</b><div class="item-sub">${sub}</div>${msg ? `<b style="color:var(--bad)">${esc(msg)}</b>` : ""}</div>
           <div class="item-act">
@@ -280,7 +323,7 @@
     let html = "";
     if (p && p.length) {
       html = `<div class="notice bad"><b>Nothing was taken.</b> Some items changed while you were checking out:<ul>` +
-        p.map((x) => `<li>${esc(x.label)} — ${x.available ? `only ${x.available} left (you asked for ${x.requested})` : "not available"}</li>`).join("") +
+        p.map((x) => `<li>${esc(x.label)} — ${x.reason === "kit_unavailable" ? "someone else just took this kit" : x.available ? `only ${x.available} left (you asked for ${x.requested})` : "not available"}</li>`).join("") +
         `</ul><button type="button" class="btn small primary" id="fixCart">Adjust my cart to what’s available</button></div>`;
     } else if (issues) {
       html = `<div class="notice warn">Some items need attention (highlighted above) before you can check out.
@@ -292,7 +335,11 @@
       fix.onclick = () => {
         for (const id of cartIds()) {
           const it = st.byId.get(id);
-          if (!it || it.quantity <= 0) delete st.cart[id];
+          if (it && it.material_type === KIT) {
+            const ok = kitNums(it);
+            st.kc[id] = (st.kc[id] || []).filter((k) => ok.has(k));
+            delete st.cart[id];
+          } else if (!it || it.quantity <= 0) delete st.cart[id];
           else st.cart[id] = Math.min(st.cart[id], it.quantity);
         }
         st.problems = null;
@@ -320,11 +367,24 @@
   };
 
   $("#cartCard").addEventListener("click", (e) => {
+    const kr = e.target.closest("[data-kitrm]");
+    if (kr) {
+      const id = Number(kr.closest(".cart-line").dataset.id);
+      st.kc[id] = (st.kc[id] || []).filter((k) => k !== Number(kr.dataset.kitrm));
+      st.problems = null;
+      saveCart();
+      renderCart();
+      updateBar();
+      return;
+    }
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const id = Number(b.closest(".cart-line").dataset.id);
     const it = st.byId.get(id);
-    if (b.dataset.act === "rm") delete st.cart[id];
+    if (b.dataset.act === "rm") {
+      delete st.cart[id];
+      delete st.kc[id];
+    }
     if (b.dataset.act === "dec") st.cart[id] = Math.max(1, st.cart[id] - 1);
     if (b.dataset.act === "inc") st.cart[id] = Math.min(avail(it), st.cart[id] + 1);
     st.problems = null;
@@ -352,7 +412,9 @@
       email = $("#em").value.trim();
     if (!name) return fail("Please enter your name.");
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail("Please enter a valid email address.");
-    const lines = cartIds().map((id) => ({ item_id: id, qty: st.cart[id] }));
+    const lines = cartIds().map((id) =>
+      st.kc[id] && st.kc[id].length ? { item_id: id, kit_ids: st.kc[id] } : { item_id: id, qty: st.cart[id] }
+    );
     if (!lines.length) return fail("Your cart is empty.");
 
     function fail(m) {
@@ -376,6 +438,7 @@
       LS.del("co_token");
       LS.set("who_v1", { name, email });
       st.cart = {};
+      st.kc = {};
       saveCart();
       st.problems = null;
       location.hash = "receipt=" + r.receipt.token;
@@ -405,10 +468,10 @@
       ${duplicate ? `<div class="notice">This checkout was already recorded — nothing was taken twice.</div>` : ""}
       ${status}
       <ul class="receipt-list">${r.lines
-        .map((l) => `<li><span>${esc(l.exam)}<br><span class="muted small">${esc([l.edition, l.type_name, l.form_name].filter(Boolean).join(" · "))}</span></span><b>× ${l.qty}</b></li>`)
+        .map((l) => `<li><span>${esc(l.exam)}<br><span class="muted small">${esc([l.edition, l.type_name, l.form_name].filter(Boolean).join(" · "))}</span>${l.kits && l.kits.length ? `<br><b>Kit ${l.kits.map((k) => "#" + k.number).join(", ")}</b>` : ""}</span><b>× ${l.qty}</b></li>`)
         .join("")}</ul>
       <p><b>${r.total_units} total</b></p>
-      ${r.lines.some((l) => l.material_type === "test_kit") ? `<div class="notice"><b>Test kits need to come back.</b> When you're done, open this page again and tap <b>Returning a test kit</b>.</div>` : ""}
+      ${r.lines.some((l) => l.material_type === "test_kit") ? `<div class="notice"><b>Test kits need to come back.</b> When you're done, open this page again, tap <b>Returning a test kit</b>, and tell us if anything is missing.</div>` : ""}
       <button class="btn primary block" id="again">Start a new checkout</button>`;
     $("#again").onclick = async () => {
       history.replaceState(null, "", location.pathname);
@@ -459,44 +522,45 @@
       box.innerHTML = `<div class="card">No test kits are checked out under that email. Double-check the address you used at checkout.</div>`;
       return;
     }
-    box.innerHTML = `<div class="card"><h2>Kits you still have</h2>${loans
+    box.innerHTML = `<div class="card"><h2>Kits you still have</h2>
+      <p class="muted small">Untick any kit you're keeping longer. If something is missing or damaged, tap <b>Report a problem</b> on that kit.</p>${loans
       .map(
-        (l) => `<div class="cart-line" data-line="${l.line_id}" data-max="${l.outstanding}">
-          <div style="flex:1 1 200px"><b>${esc(l.label)}</b><div class="item-sub">Taken ${esc(fmtDate(l.created_at))} · ${l.outstanding} out</div></div>
-          <div class="item-act"><div class="stepper"><button type="button" data-act="dec" aria-label="Fewer">−</button>
-          <input data-qty inputmode="numeric" value="${l.outstanding}" aria-label="How many to return">
-          <button type="button" data-act="inc" aria-label="More">+</button></div></div></div>`
+        (l) => `<div class="retkit" data-kit="${l.kit_id}">
+          <label class="retkit-head"><input type="checkbox" data-ret checked> <span><b>${esc(l.label)}</b><br><span class="item-sub">Taken ${esc(fmtDate(l.created_at))}</span></span></label>
+          <button type="button" class="btn small ghost" data-prob>Report a problem</button>
+          <div class="retkit-prob" hidden>
+            ${l.contents && l.contents.length ? `<div class="small"><b>Tick anything that is missing or damaged:</b></div>
+            ${l.contents.map((c, i) => `<label class="chk"><input type="checkbox" data-miss value="${esc(c)}"> <span>${esc(c)}</span></label>`).join("")}` : ""}
+            <label class="small" style="margin-top:8px">Anything else we should know? (optional)</label>
+            <input data-note maxlength="300" placeholder="e.g. cover is cracked">
+          </div></div>`
       )
       .join("")}
       <p id="retErr2" class="form-error" role="alert" hidden></p>
-      <button class="btn primary block" id="retGo" style="margin-top:14px">Return these kits</button>
-      <p class="hint" style="text-align:center">Set a number to 0 for any kit you're keeping a bit longer.</p></div>`;
+      <button class="btn primary block" id="retGo" style="margin-top:14px">Return these kits</button></div>`;
   }
 
   $("#retList").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-act]");
-    if (!b) return;
-    const row = b.closest(".cart-line");
-    const input = $("[data-qty]", row);
-    const max = Number(row.dataset.max);
-    let v = parseInt(input.value, 10) || 0;
-    v = b.dataset.act === "inc" ? Math.min(max, v + 1) : Math.max(0, v - 1);
-    input.value = v;
-  });
-  $("#retList").addEventListener("change", (e) => {
-    if (!e.target.matches("[data-qty]")) return;
-    const max = Number(e.target.closest(".cart-line").dataset.max);
-    e.target.value = Math.max(0, Math.min(parseInt(e.target.value, 10) || 0, max));
+    const pb = e.target.closest("[data-prob]");
+    if (pb) {
+      const panel = pb.parentElement.querySelector(".retkit-prob");
+      panel.hidden = !panel.hidden;
+      pb.textContent = panel.hidden ? "Report a problem" : "Hide problem report";
+    }
   });
   $("#retList").addEventListener("click", async (e) => {
     if (e.target.id !== "retGo") return;
     const btn = e.target;
     const err = $("#retErr2");
     err.hidden = true;
-    const lines = $$("#retList .cart-line")
-      .map((r) => ({ line_id: Number(r.dataset.line), qty: parseInt($("[data-qty]", r).value, 10) || 0 }))
-      .filter((l) => l.qty > 0);
-    if (!lines.length) {
+    const kits = $$("#retList .retkit")
+      .filter((r) => $("[data-ret]", r).checked)
+      .map((r) => ({
+        kit_id: Number(r.dataset.kit),
+        missing: $$("[data-miss]:checked", r).map((c) => c.value),
+        note: $("[data-note]", r).value.trim(),
+      }));
+    if (!kits.length) {
       err.textContent = "Choose at least one kit to return.";
       err.hidden = false;
       return;
@@ -506,13 +570,15 @@
     btn.disabled = true;
     btn.textContent = "Returning…";
     try {
-      const r = await api("/api/return", { method: "POST", body: { token, email: $("#retEmail").value.trim(), lines } });
+      const r = await api("/api/return", { method: "POST", body: { token, email: $("#retEmail").value.trim(), kits } });
       LS.del("ret_token");
       $("#retList").innerHTML = "";
       const d = $("#retDone");
       d.hidden = false;
+      const flagged = (r.returned || []).some((x) => x.status !== "available");
       d.innerHTML = `<div class="tick" aria-hidden="true">✓</div><h2>Thank you — returned!</h2>
-        ${r.duplicate ? `<p class="muted">This return was already recorded.</p>` : `<ul class="receipt-list">${r.returned.map((x) => `<li><span>${esc(x.label)}</span><b>× ${x.qty}</b></li>`).join("")}</ul>`}
+        ${r.duplicate ? `<p class="muted">This return was already recorded.</p>` : `<ul class="receipt-list">${r.returned.map((x) => `<li><span>${esc(x.label)}</span><b>${x.status === "available" ? "OK" : "Reported"}</b></li>`).join("")}</ul>`}
+        ${flagged ? `<div class="notice">Thanks for letting us know about the problem. The owner has been notified and will check that kit.</div>` : ""}
         <button class="btn primary block" id="retAgain">Done</button>`;
       $("#retAgain").onclick = () => $("#retBack").click();
     } catch (e2) {

@@ -326,56 +326,6 @@
     }
   }
 
-  function kitEditModal(it, k) {
-    const out = k.status === "out";
-    const again = () => { manageKitsModal(it); if (S.tab === "dashboard") renderDashboard(); };
-    const m = modal({
-      title: `Kit #${k.number} — ${it.exam}`,
-      submit: "Save kit",
-      wide: true,
-      body: `${out ? `<p class="notice">This kit is checked out${k.borrower ? " by " + esc(k.borrower) : ""}. You can edit its contents list now; mark it returned from the dashboard to change its status.</p>` : `
-        <label for="ks">Status</label><select id="ks">${["available", "attention", "lost", "retired"].map((s) => `<option value="${s}" ${s === k.status ? "selected" : ""}>${KSTAT[s]}</option>`).join("")}</select>
-        <div id="kmw"><label>Missing or damaged <span class="muted">(tick what's wrong — the kit is then held back as “Needs attention”)</span></label>
-        <div id="kmlist"></div>
-        <label for="kn2">Note <span class="muted">(optional)</span></label><input id="kn2" maxlength="300" value="${esc(k.issue_note || "")}"></div>`}
-        <label for="kc">What's in this kit <span class="muted">(one item per line — only for kit #${k.number})</span></label>
-        <textarea id="kc" rows="9">${esc(k.contents.join("\n"))}</textarea>
-        <div class="row" style="margin-top:6px"><button type="button" class="btn small ghost" id="kreset">Use the shared list for all ${esc(it.exam)} kits</button>
-        <span class="small muted">${k.custom ? "This kit has its own list." : "Currently using the shared list."}</span></div>`,
-      onMount(f) {
-        let reset = false;
-        const draw = () => {
-          if (out) return;
-          const items = $("#kc", f).value.split("\n").map((x) => x.trim()).filter(Boolean);
-          const checked = new Set($$("[data-miss]:checked", f).map((c) => c.value).concat(draw.first ? [] : k.missing));
-          draw.first = true;
-          $("#kmlist", f).innerHTML = items.map((c) => `<label class="chk"><input type="checkbox" data-miss value="${esc(c)}" ${checked.has(c) ? "checked" : ""}> <span>${esc(c)}</span></label>`).join("") || `<p class="muted small">Add items to the list below first.</p>`;
-        };
-        draw();
-        $("#kc", f).addEventListener("change", draw);
-        $("#kreset", f).onclick = () => { $("#kc", f).value = it.contents.join("\n"); reset = true; draw(); };
-        f._reset = () => reset;
-      },
-      async onSubmit(f) {
-        const text = $("#kc", f).value;
-        const same = text.split("\n").map((x) => x.trim()).filter(Boolean).join("\n") === it.contents.join("\n");
-        const mustReset = f._reset() || (same && !k.custom ? false : same);
-        if (same && k.custom) await api(`/api/admin/kits/${k.id}/contents`, { method: "PUT", body: { contents: "" } });
-        else if (!same) await api(`/api/admin/kits/${k.id}/contents`, { method: "PUT", body: { contents: text } });
-        if (!out) {
-          const missing = $$("[data-miss]:checked", f).map((c) => c.value);
-          const note = $("#kn2", f).value;
-          let status = $("#ks", f).value;
-          if (missing.length && status === "available") status = "attention";
-          const changed = status !== k.status || missing.join("|") !== k.missing.join("|") || note !== (k.issue_note || "");
-          if (changed) await api(`/api/admin/kits/${k.id}`, { method: "PUT", body: { status, missing: status === "available" ? [] : missing, note: status === "available" ? "" : note } });
-        }
-        toast("Saved", "good");
-        setTimeout(again, 0);
-      },
-    });
-  }
-
   async function manageKitsModal(it) {
     let data;
     try {
@@ -389,20 +339,25 @@
       wide: true,
       body: `<p class="muted small">Each kit has its own number. Only <b>Available</b> kits can be taken by students.</p>
         <div class="table-wrap"><table><thead><tr><th>Kit</th><th>Status</th><th>Notes</th><th></th></tr></thead><tbody>
-        ${data.kits.map((k) => `<tr data-k="${k.id}"><td><b>#${k.number}</b>${k.custom ? `<div class="small muted">own list</div>` : ""}</td>
-          <td>${k.status === "out" ? `<span class="badge neutral">Checked out</span>${k.borrower ? `<div class="small muted">${esc(k.borrower)}</div>` : ""}` : `<span class="badge ${k.status === "available" ? "in" : k.status === "attention" ? "low" : "neutral"}">${KSTAT[k.status]}</span>`}</td>
+        ${data.kits.map((k) => `<tr data-k="${k.id}"><td><b>#${k.number}</b></td>
+          <td>${k.status === "out" ? `<span class="badge neutral">Checked out</span>${k.borrower ? `<div class="small muted">${esc(k.borrower)}</div>` : ""}` : `<select data-st>${["available", "attention", "lost", "retired"].map((s) => `<option value="${s}" ${s === k.status ? "selected" : ""}>${KSTAT[s]}</option>`).join("")}</select>`}</td>
           <td class="small">${k.missing.length ? "Missing: " + k.missing.map(esc).join(", ") : ""}${k.issue_note ? `<div class="muted">${esc(k.issue_note)}</div>` : ""}</td>
-          <td><button type="button" class="btn small" data-edit>Edit</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">No kits yet.</td></tr>`}
+          <td>${k.status === "out" ? "" : `<button type="button" class="btn small" data-save>Save</button>`}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">No kits yet.</td></tr>`}
         </tbody></table></div>
         <h3 style="margin-top:16px">Add kits</h3>
         <label for="kadd">Kit numbers <span class="muted">(e.g. 1, 3, 4-6)</span></label><input id="kadd" placeholder="12 or 12-14">
         <label for="kst">Add them as</label><select id="kst"><option value="available">Available</option><option value="lost">Lost / missing</option><option value="retired">Retired</option></select>
         <button type="button" class="btn primary" id="kaddgo" style="margin-top:10px">Add kits</button>`,
       onMount(f) {
-        $$("[data-edit]", f).forEach((b) => (b.onclick = () => {
-          const k = data.kits.find((x) => x.id === Number(b.closest("tr").dataset.k));
-          m.close();
-          kitEditModal(it, k);
+        $$("[data-save]", f).forEach((b) => (b.onclick = async () => {
+          const tr = b.closest("tr");
+          try {
+            await api(`/api/admin/kits/${tr.dataset.k}`, { method: "PUT", body: { status: $("[data-st]", tr).value } });
+            toast("Saved", "good");
+            m.close();
+            manageKitsModal(it);
+            if (S.tab === "dashboard") renderDashboard();
+          } catch (e) { toast(e.message, "bad"); }
         }));
         $("#kaddgo", f).onclick = async () => {
           try {

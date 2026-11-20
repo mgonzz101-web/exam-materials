@@ -154,7 +154,6 @@ def init_schema(d):
                 issue_note TEXT NOT NULL DEFAULT '',
                 issue_by TEXT NOT NULL DEFAULT '',
                 issue_at TEXT,
-                contents TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 UNIQUE (item_id, number))""",
             f"""CREATE TABLE IF NOT EXISTS checkout_kits (
@@ -209,10 +208,7 @@ def init_schema(d):
         if IS_PG:
             d.execute("ALTER TABLE checkout_lines ADD COLUMN IF NOT EXISTS returned_qty INTEGER NOT NULL DEFAULT 0")
             d.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS contents TEXT NOT NULL DEFAULT ''")
-            d.execute("ALTER TABLE kits ADD COLUMN IF NOT EXISTS contents TEXT NOT NULL DEFAULT ''")
         else:
-            if "contents" not in [r["name"] for r in d.execute("PRAGMA table_info(kits)").all()]:
-                d.execute("ALTER TABLE kits ADD COLUMN contents TEXT NOT NULL DEFAULT ''")
             icols = [r["name"] for r in d.execute("PRAGMA table_info(items)").all()]
             if "contents" not in icols:
                 d.execute("ALTER TABLE items ADD COLUMN contents TEXT NOT NULL DEFAULT ''")

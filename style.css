@@ -129,3 +129,15 @@ tr.archived td{opacity:.55}
 .seg input:checked+span{color:var(--brand)}
 .preview{background:var(--brand-soft);padding:10px 12px;border-radius:10px;margin-top:10px;font-weight:700}
 @media print{.topbar,.cartbar,.no-print{display:none!important}body{background:#fff}.card{box-shadow:none}}
+
+/* numbered test kits */
+.kitpick{flex:1 1 100%;}
+.kitgrid{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;}
+.kit-contents{margin-top:6px;}
+.kit-contents ul{margin:6px 0 0 18px;padding:0;}
+.retkit{border:1px solid var(--line,#ddd);border-radius:12px;padding:12px;margin:10px 0;}
+.retkit-head{display:flex;gap:10px;align-items:flex-start;cursor:pointer;}
+.retkit-head input{width:22px;height:22px;margin-top:2px;}
+.retkit-prob{margin-top:10px;}
+.chk{display:flex;gap:8px;align-items:flex-start;padding:6px 0;}
+.chk input{width:20px;height:20px;flex:none;}
