@@ -5,6 +5,7 @@
     items: [],
     byId: new Map(),
     cart: LS.get("cart_v1", {}), // { itemId: qty } — lives only in this browser until checkout succeeds
+    kr: {}, // { kitId: {missing: [...], note} } what the student says is already missing when taking a kit
     kc: LS.get("kitcart_v1", {}), // { itemId: [kitId, ...] } — specific numbered test kits chosen
     pending: {}, // qty chosen on the stepper before "Add"
     q: "",
@@ -299,7 +300,16 @@
             .join("");
           return `<div class="cart-line ${msg ? "bad" : ""}" data-id="${id}">
             <div style="flex:1 1 200px"><b>${title}</b><div class="item-sub">${sub}</div>${msg ? `<b style="color:var(--bad)">${esc(msg)}</b>` : ""}
-            <div class="kitgrid" style="margin-top:6px">${chips}</div></div>
+            <div class="kitgrid" style="margin-top:6px">${chips}</div>
+            ${(st.kc[id] || []).filter((k) => nums.has(k)).map((k) => {
+              const kit = it.kits.find((x) => x.id === k);
+              const rp = st.kr[k] || { missing: [], note: "" };
+              return `<details class="kitchk" data-kitchk="${k}" ${rp.missing.length || rp.note ? "open" : ""}>
+                <summary><b>Kit #${kit.number}:</b> check what's inside${rp.missing.length || rp.note ? ` <span class="badge low">problem noted</span>` : ""}</summary>
+                <div class="small muted">Tick anything that is <b>missing or damaged right now</b>. Leave blank if everything is there.</div>
+                ${kit.contents.map((c) => `<label class="chk"><input type="checkbox" data-kmiss value="${esc(c)}" ${rp.missing.includes(c) ? "checked" : ""}> <span>${esc(c)}</span></label>`).join("")}
+                <input data-knote maxlength="300" placeholder="Anything else? (optional)" value="${esc(rp.note)}"></details>`;
+            }).join("")}</div>
             <div class="item-act"><button type="button" class="btn small ghost" data-act="rm">Remove</button></div></div>`;
         }
         return `<div class="cart-line ${msg ? "bad" : ""}" data-id="${id}">
@@ -366,6 +376,10 @@
     renderList();
   };
 
+  $("#cartCard").addEventListener("input", (e) => {
+    const box = e.target.closest("[data-kitchk]");
+    if (box) saveKitReport(box);
+  });
   $("#cartCard").addEventListener("click", (e) => {
     const kr = e.target.closest("[data-kitrm]");
     if (kr) {
@@ -392,7 +406,13 @@
     renderCart();
     updateBar();
   });
+  function saveKitReport(box) {
+    const kid = Number(box.dataset.kitchk);
+    st.kr[kid] = { missing: $$("[data-kmiss]:checked", box).map((c) => c.value), note: $("[data-knote]", box).value.trim() };
+  }
   $("#cartCard").addEventListener("change", (e) => {
+    const box = e.target.closest("[data-kitchk]");
+    if (box) { saveKitReport(box); return; }
     if (!e.target.matches("[data-qty]")) return;
     const id = Number(e.target.closest(".cart-line").dataset.id);
     const v = parseInt(e.target.value, 10);
@@ -413,7 +433,10 @@
     if (!name) return fail("Please enter your name.");
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail("Please enter a valid email address.");
     const lines = cartIds().map((id) =>
-      st.kc[id] && st.kc[id].length ? { item_id: id, kit_ids: st.kc[id] } : { item_id: id, qty: st.cart[id] }
+      st.kc[id] && st.kc[id].length
+        ? { item_id: id, kit_ids: st.kc[id],
+            reports: st.kc[id].map((k) => ({ kit_id: k, ...(st.kr[k] || {}) })).filter((r) => (r.missing && r.missing.length) || r.note) }
+        : { item_id: id, qty: st.cart[id] }
     );
     if (!lines.length) return fail("Your cart is empty.");
 
@@ -439,6 +462,7 @@
       LS.set("who_v1", { name, email });
       st.cart = {};
       st.kc = {};
+      st.kr = {};
       saveCart();
       st.problems = null;
       location.hash = "receipt=" + r.receipt.token;

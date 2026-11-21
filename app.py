@@ -506,7 +506,7 @@ def attach_kits(d, items, admin=False):
         return items
     ph = ",".join("?" * len(ids))
     by = defaultdict(list)
-    for k in d.execute(f"SELECT id, item_id, number, status FROM kits WHERE item_id IN ({ph}) ORDER BY number", tuple(ids)).all():
+    for k in d.execute(f"SELECT id, item_id, number, status, contents FROM kits WHERE item_id IN ({ph}) ORDER BY number", tuple(ids)).all():
         by[k["item_id"]].append(k)
     for i in items:
         if i["material_type"] != RETURNABLE:
@@ -518,7 +518,9 @@ def attach_kits(d, items, admin=False):
                 counts[k["status"]] = counts.get(k["status"], 0) + 1
             i["kit_counts"] = counts
         else:
-            i["kits"] = [{"id": k["id"], "number": k["number"]} for k in ks if k["status"] == "available"]
+            shared = i.get("contents") or []
+            i["kits"] = [{"id": k["id"], "number": k["number"], "contents": contents_list(k["contents"]) or shared}
+                         for k in ks if k["status"] == "available"]
     return items
 
 
@@ -769,7 +771,14 @@ def api_checkout():
         if not isinstance(ln, dict):
             raise ApiError("Invalid cart.")
         iid = n(ln.get("item_id"), "Item", 1, 10**12)
-        ent = lines.setdefault(iid, {"qty": 0, "kit_ids": []})
+        ent = lines.setdefault(iid, {"qty": 0, "kit_ids": [], "reports": {}})
+        for rp in (ln.get("reports") or []) if isinstance(ln.get("reports"), list) else []:
+            if not isinstance(rp, dict):
+                raise ApiError("Invalid kit report.")
+            rk = n(rp.get("kit_id"), "Kit", 1, 10**12)
+            miss, note = clean_missing(rp.get("missing")), s(rp.get("note"), "Note", 300)
+            if miss or note:
+                ent["reports"][rk] = (miss, note)
         if ln.get("kit_ids") is not None:
             kids = ln["kit_ids"]
             if not isinstance(kids, list) or not kids or len(kids) > 60:
@@ -783,6 +792,9 @@ def api_checkout():
                 ent["qty"] += 1
         else:
             ent["qty"] += n(ln.get("qty"), "Quantity", 1, 10_000)  # rejects zero / negative
+    for ent in lines.values():
+        if any(r not in ent["kit_ids"] for r in ent["reports"]):
+            raise ApiError("A missing-item report doesn't match a kit in your cart.")
 
     alerts = []
     now = utcnow()
@@ -854,6 +866,13 @@ def api_checkout():
                 ).one()["id"]
                 for k in taken_kits:
                     d.execute("INSERT INTO checkout_kits(line_id,checkout_id,kit_id) VALUES(?,?,?)", (line_id, cid, k["id"]))
+                    rep = lines[item_id]["reports"].get(k["id"])
+                    if rep:  # borrower says something was already missing when they picked it up
+                        d.execute("UPDATE kits SET issue_items=?, issue_note=?, issue_by=?, issue_at=? WHERE id=?",
+                                  ("\n".join(rep[0]), rep[1], name, utcnow(), k["id"]))
+                        add_movement(d, item_id, row["quantity"] + qty, row["quantity"], "kit_status",
+                                     f"Kit #{k['number']} reported at checkout" + (": missing " + ", ".join(rep[0]) if rep[0] else "")
+                                     + (f" ({rep[1]})" if rep[1] else ""), cid, name, user["id"] if user else None)
                 reason = ("Kit " + ", ".join(f"#{k['number']}" for k in sorted(taken_kits, key=lambda x: x["number"]))) if taken_kits else ""
                 add_movement(d, item_id, row["quantity"] + qty, row["quantity"], "checkout",
                              reason, cid, name, user["id"] if user else None)
@@ -1094,6 +1113,8 @@ def admin_reverse(cid):
                          reason, cid, u["name"], u["id"])
             apply_alert(d, row, "checkout reversal", alerts)
         # kits still out go back on the shelf; ones already returned keep whatever status the return gave them
+        d.execute("UPDATE kits SET issue_items='', issue_note='', issue_by='', issue_at=NULL WHERE status='out' AND id IN"
+                  " (SELECT kit_id FROM checkout_kits WHERE checkout_id=? AND returned_at IS NULL)", (cid,))
         d.execute("UPDATE kits SET status='available' WHERE status='out' AND id IN"
                   " (SELECT kit_id FROM checkout_kits WHERE checkout_id=? AND returned_at IS NULL)", (cid,))
         d.execute("UPDATE checkout_kits SET returned_at=? WHERE checkout_id=? AND returned_at IS NULL", (utcnow(), cid))
@@ -1195,7 +1216,7 @@ def do_return_kit(d, kit_id, who, who_id, alerts, email=None, condition="ok", mi
     lost -> not counted. The checkout row is locked first and the return row is claimed with
     `returned_at IS NULL`, so a kit can only ever be returned once, even with simultaneous taps or a reversal."""
     missing = missing or []
-    sql = ("SELECT ck.id AS ck_id, ck.line_id, ck.checkout_id, k.number, k.item_id, i.exam, i.edition, i.form_name"
+    sql = ("SELECT ck.id AS ck_id, ck.line_id, ck.checkout_id, k.number, k.item_id, k.issue_items, k.issue_note, i.exam, i.edition, i.form_name"
            " FROM checkout_kits ck JOIN kits k ON k.id=ck.kit_id JOIN checkouts c ON c.id=ck.checkout_id"
            " JOIN items i ON i.id=k.item_id WHERE ck.kit_id=? AND ck.returned_at IS NULL")
     params = [kit_id]
@@ -1211,6 +1232,12 @@ def do_return_kit(d, kit_id, who, who_id, alerts, email=None, condition="ok", mi
     if not d.execute("UPDATE checkout_kits SET returned_at=? WHERE id=? AND returned_at IS NULL RETURNING id", (now, ck["ck_id"])).one():
         raise ApiError("That kit has already been returned.", 409)
     d.execute("UPDATE checkout_lines SET returned_qty=returned_qty+1 WHERE id=?", (ck["line_id"],))
+    prior, prior_note = contents_list(ck["issue_items"]), ck["issue_note"]
+    if (prior or prior_note) and condition != "lost":
+        # reported missing when it was picked up: never put it straight back on the shelf; the owner checks it first
+        condition = "attention"
+        missing = prior + [x for x in missing if x not in prior]
+        note = "; ".join(x for x in (("Reported at checkout: " + prior_note) if prior_note else "", note) if x)
     status = {"ok": "available", "attention": "attention", "lost": "lost"}[condition]
     if status == "available":
         d.execute("UPDATE kits SET status='available', issue_items='', issue_note='', issue_by='', issue_at=NULL WHERE id=?", (kit_id,))
@@ -1235,7 +1262,7 @@ def do_return_kit(d, kit_id, who, who_id, alerts, email=None, condition="ok", mi
 def loans_for(d, email=None):
     """Every numbered kit that is currently out (optionally only for one email address)."""
     sql = ("SELECT ck.kit_id, ck.line_id, k.number, c.id AS checkout_id, c.name, c.email, c.created_at,"
-           " i.id AS item_id, i.exam, i.edition, i.form_name, i.contents"
+           " k.issue_items, k.issue_note, i.id AS item_id, i.exam, i.edition, i.form_name, CASE WHEN k.contents<>'' THEN k.contents ELSE i.contents END AS contents"
            " FROM checkout_kits ck JOIN kits k ON k.id=ck.kit_id JOIN checkouts c ON c.id=ck.checkout_id"
            " JOIN items i ON i.id=k.item_id WHERE ck.returned_at IS NULL AND c.status='completed'")
     params = []
@@ -1246,6 +1273,7 @@ def loans_for(d, email=None):
     for r in rows:
         r["label"] = kit_title(r, r["number"])
         r["contents"] = contents_list(r["contents"])
+        r["reported"] = contents_list(r.pop("issue_items"))
     return rows
 
 
@@ -1372,13 +1400,39 @@ def admin_kits(item_id):
     d = get_db()
     it = _kit_item(d, item_id)
     rows = d.execute(
-        "SELECT k.id, k.number, k.status, k.issue_items, k.issue_note, k.issue_by, k.issue_at,"
+        "SELECT k.id, k.number, k.status, k.issue_items, k.issue_note, k.issue_by, k.issue_at, k.contents AS own_contents,"
         " (SELECT c.name FROM checkout_kits ck JOIN checkouts c ON c.id=ck.checkout_id WHERE ck.kit_id=k.id"
         "  AND ck.returned_at IS NULL AND c.status='completed' ORDER BY ck.id DESC LIMIT 1) AS borrower"
         " FROM kits k WHERE k.item_id=? ORDER BY k.number", (item_id,)).all()
     for r in rows:
         r["missing"] = contents_list(r.pop("issue_items"))
+        r["custom"] = bool(r["own_contents"])
+        r["contents"] = contents_list(r.pop("own_contents")) or contents_list(it["contents"])
     return jsonify(item=item_json(it, True), kits=rows, contents=contents_list(it["contents"]))
+
+
+@app.put("/api/admin/kits/<int:kit_id>/contents")
+@owner_required
+def admin_kit_contents(kit_id):
+    """Give one kit its own contents list (empty = go back to the item's shared list)."""
+    d = get_db()
+    u = current_user()
+    raw = body().get("contents", "")
+    if isinstance(raw, list):
+        raw = "\n".join(str(x) for x in raw)
+    lines = [x.strip() for x in str(raw or "").splitlines() if x.strip()]
+    if len(lines) > 80 or any(len(x) > 120 for x in lines):
+        raise ApiError("Kit contents: please use at most 80 lines of 120 characters each.")
+    with tx(d):
+        k = d.execute("SELECT id, item_id, number FROM kits WHERE id=?" + FOR_UPDATE, (kit_id,)).one()
+        if not k:
+            raise ApiError("Kit not found.", 404)
+        d.execute("UPDATE kits SET contents=? WHERE id=?", ("\n".join(lines), kit_id))
+        row = d.execute(f"SELECT {ITEM_ROW} FROM items WHERE id=?", (k["item_id"],)).one()
+        add_movement(d, k["item_id"], row["quantity"], row["quantity"], "kit_status",
+                     f"Kit #{k['number']}: contents list " + ("customized" if lines else "reset to the item's list"),
+                     None, u["name"], u["id"])
+    return jsonify(ok=True)
 
 
 @app.post("/api/admin/items/<int:item_id>/kits")

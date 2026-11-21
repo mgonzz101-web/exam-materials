@@ -141,3 +141,6 @@ tr.archived td{opacity:.55}
 .retkit-prob{margin-top:10px;}
 .chk{display:flex;gap:8px;align-items:flex-start;padding:6px 0;}
 .chk input{width:20px;height:20px;flex:none;}
+.kitchk{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;}
+.kitchk summary{cursor:pointer;}
+.kitchk input[data-knote]{margin-top:8px;}
